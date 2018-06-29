@@ -1,0 +1,1 @@
+no-port-forwarding,no-X11-forwarding,command="/usr/local/bin/aptly_proxy" $SSH_KEY

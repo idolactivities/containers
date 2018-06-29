@@ -1,0 +1,81 @@
+#!/bin/bash -fu
+function log() {
+    if [ -z "$*" ]; then msg="unknown action"; else msg="$*"; fi
+    timestamp=$(date +"%Y.%m.%d %H:%M:%S")
+    ip=$(echo $SSH_CONNECTION | awk '{print $1}')
+    echo "$timestamp $ip $msg" >> aptly_proxy.log
+}
+function error() {
+    if [ -z "$*" ]; then details="request not permitted"; else details="$*"; fi
+    log "ERROR: $details"
+    >&2 echo -e "ERROR: $details"
+    exit 1
+}
+
+host_prefix="http://packages.local/aptly"
+
+soc=${SSH_ORIGINAL_COMMAND:-}
+if [ "x$soc" == x ]; then
+    log "Shell Open Attempt"
+    docker inspect aptly_$USER >/dev/null 2>&1;
+    if [[ $? == 0 ]]; then
+        log "Shell Close (API in use)"
+        exec echo "Cannot use the Aptly CLI while the API is in use."
+    fi
+    flock -n $HOME/aptly.lock docker run --name=aptly_$USER -p 127.0.0.1:$(cat $HOME/nginx_aptly_port):8080 --rm -ti -v $HOME/aptly:/aptly -v $HOME/.gnupg:/root/.gnupg -v $HOME/aptly.conf:/etc/aptly.conf idolactivities/aptly:latest /bin/bash --login
+    code=$?
+    if [[ $code == 1 ]]; then
+        log "Shell Open Failed (Lock exists)"
+        exec echo "An aptly shell can only be open in one location at a time. Sorry for the inconvenience."
+    fi
+        log "Shell Close ($code)"
+    exit
+fi
+set -- $soc # passes the SSH command to ARGV
+
+case "$1" in
+"api")
+    shift
+    if [ "x$@" == x ]; then
+        log "API - No parameters passed"
+        exec echo "What do you want to do with the API service? (start, stop, status)"
+    fi
+    case "$@" in
+    "start")
+        log "API - Start Request"
+        docker inspect aptly_$USER >/dev/null 2>&1;
+        if [[ $? != 0 ]]; then
+            docker run --name=aptly_$USER -p 127.0.0.1:$(cat $HOME/nginx_aptly_port):8080 -d -v $HOME/aptly:/aptly -v $HOME/.gnupg:/root/.gnupg -v $HOME/aptly.conf:/etc/aptly.conf idolactivities/aptly:latest aptly api serve --listen=:8080 >/dev/null
+            if [[ $? != 0 ]]; then
+                exec echo "Failed to start Aptly API service. Please contact your administrator."
+            fi
+            exec echo "Aptly API started! $host_prefix/$USER/api/version"
+        else
+            exec echo "Aptly API for $USER is already running."
+        fi
+    ;;
+    "stop")
+        log "API - Stop Request"
+        docker inspect aptly_$USER >/dev/null 2>&1;
+        if [[ $? == 0 ]]; then
+            docker stop aptly_$USER >/dev/null && docker rm aptly_$USER >/dev/null
+            exec echo "Aptly API for $USER has been stopped."
+        else
+            exec echo "Aptly API for $USER is not running right now."
+        fi
+    ;;
+    "status")
+        log "API - Status Request"
+        docker inspect aptly_$USER >/dev/null 2>&1;
+        if [[ $? == 0 ]]; then
+            exec docker stats --no-stream aptly_$USER
+        else
+            exec echo "Aptly API for $USER is not running right now."
+        fi
+    ;;
+    esac
+;;
+*)
+    exec echo "Invalid command";
+;;
+esac
